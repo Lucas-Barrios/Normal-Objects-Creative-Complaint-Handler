@@ -1,15 +1,10 @@
 import random
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from typing import List, Dict
+from typing import List
 
 load_dotenv()
-
-# Initialize LLM
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
 
 # --- Tools ---
 
@@ -111,10 +106,9 @@ def gather_party_wisdom(question: str) -> str:
 
     return "The party huddles together. Mike: 'This is a tough one.' Dustin: 'We need more information.' Lucas: 'Let's think about what we know.' Will: 'Maybe we should consult other sources?'"
 
-# --- Prompt ---
+# --- Agent ---
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are the Creative Complaint Handler for NormalObjects — a company that sells
+SYSTEM_PROMPT = """You are the Creative Complaint Handler for NormalObjects — a company that sells
 absurdly ordinary items inspired by the Stranger Things universe.
 
 When a customer complaint comes in, creatively combine your available tools in any order:
@@ -123,12 +117,7 @@ When a customer complaint comes in, creatively combine your available tools in a
 - cast_interdimensional_spell: suggest an imaginative fix
 - gather_party_wisdom: tap into the party's collective knowledge
 
-Use the tools flexibly and combine their outputs into one witty, cohesive response under 150 words."""),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
-
-# --- Agent ---
+Use the tools flexibly and combine their outputs into one witty, cohesive response under 150 words."""
 
 tools: List = [
     consult_demogorgon,
@@ -137,27 +126,82 @@ tools: List = [
     gather_party_wisdom
 ]
 
-agent = create_openai_tools_agent(llm=llm, tools=tools, prompt=prompt)
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+agent_executor = create_agent(
+    model="openai:gpt-4o-mini",
+    tools=tools,
+    system_prompt=SYSTEM_PROMPT,
+)
 
 print(f"Created {len(tools)} creative tools:")
 for t in tools:
     print(f"  - {t.name}: {t.description[:60]}...")
 
-def handle_complaint(complaint: str) -> Dict:
-    return agent_executor.invoke({"input": complaint})
+# --- Tool Usage Tracker ---
+
+class ToolUsageTracker:
+    """Track tool usage for analysis"""
+    def __init__(self):
+        self.usage_count = {tool.name: 0 for tool in tools}
+        self.tool_sequences = []
+
+    def track_usage(self, tool_name: str):
+        """Track when a tool is used"""
+        if tool_name in self.usage_count:
+            self.usage_count[tool_name] += 1
+            self.tool_sequences.append(tool_name)
+
+    def get_statistics(self):
+        """Get usage statistics"""
+        return {
+            "total_tool_calls": sum(self.usage_count.values()),
+            "tool_counts": self.usage_count,
+            "most_used": max(self.usage_count.items(), key=lambda x: x[1])[0] if self.usage_count else None,
+            "tool_sequences": self.tool_sequences
+        }
+
+tracker = ToolUsageTracker()
+
+# Patch each tool's invoke method so the tracker captures every agent call
+for t in tools:
+    _orig_invoke = t.invoke
+    _name = t.name
+    def _make_wrapper(name, orig):
+        def wrapper(input, **kwargs):
+            tracker.track_usage(name)
+            return orig(input, **kwargs)
+        return wrapper
+    t.invoke = _make_wrapper(_name, _orig_invoke)
+
+# --- Complaint Handler ---
+
+def handle_complaint(complaint: str) -> str:
+    """Handle a single complaint"""
+    print(f"\n{'='*60}")
+    print(f"COMPLAINT: {complaint}")
+    print(f"{'='*60}\n")
+    result = agent_executor.invoke({"messages": [{"role": "user", "content": complaint}]})
+    return result["messages"][-1].content
 
 # --- Main ---
 
 if __name__ == "__main__":
-    sample_complaints = [
-        "My plain white sock is too... white. I feel blinded.",
-        "I ordered a single chopstick and it only came with ONE. Where is the other one?",
-        "Your slightly-used air smells like air. I expected something more.",
+    complaints = [
+        "Why do demogorgons sometimes eat people and sometimes don't?",
+        "The portal opens on different days—is there a schedule?",
+        "Why can some psychics see the Downside Up and others can't?",
+        "Why do creatures and power lines react so strangely together?",
     ]
 
-    for complaint in sample_complaints:
-        print(f"\nCustomer: {complaint}")
-        result = handle_complaint(complaint)
-        print(f"Support: {result['output']}")
-        print("-" * 60)
+    print("Testing agent with sample complaints...\n")
+    for complaint in complaints[:2]:
+        response = handle_complaint(complaint)
+        print(f"\nRESPONSE: {response}\n")
+
+    print("\n=== Tool Usage Analysis ===")
+    stats = tracker.get_statistics()
+    print(f"Total tool calls: {stats['total_tool_calls']}")
+    print(f"Tool usage counts: {stats['tool_counts']}")
+    print(f"Most used tool: {stats['most_used']}")
+    print(f"\nTool sequence examples:")
+    for i in range(min(3, len(stats['tool_sequences']))):
+        print(f"  Sequence {i+1}: {' -> '.join(stats['tool_sequences'][i:i+3])}")
