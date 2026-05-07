@@ -14,13 +14,7 @@ source .venv/bin/activate
 2. Install the required packages:
 
 ```bash
-pip install python-dotenv pandas streamlit langchain langchain-community langchain-core openai
-```
-
-If your LangChain version requires it, also install:
-
-```bash
-pip install langchain-classic
+pip install python-dotenv pandas streamlit langchain langchain-community langchain-core langchain-classic openai
 ```
 
 3. Add your OpenAI API key to `.env`:
@@ -41,11 +35,17 @@ streamlit run app.py
 python3 normalobjects_langchain.py
 ```
 
+This command makes live OpenAI API calls, so it may take a little time and can consume API credits.
+
+## What the App Shows
+
+The Streamlit app provides a modern chat interface for submitting complaints, sample complaint buttons, conversation memory, live tool usage stats, recent tool sequence chips, and a usage chart showing which creative tools the agent selected.
+
 ## File Map
 
 | Path | Purpose |
 |---|---|
-| `app.py` | Streamlit web app for submitting complaints, viewing responses, and checking tool usage stats. |
+| `app.py` | Modern Streamlit web app for submitting complaints, viewing responses, checking tool usage stats, and seeing recent tool sequences. |
 | `normalobjects_langchain.py` | Core LangChain logic: model setup, tools, agent creation, memory, complaint handling, tracking, demo run, and performance comparison. |
 | `agent_evidence.md` | Proof document showing at least three complaints handled, observed tool usage patterns, and creative solution summaries. |
 | `lab_summary.md` | Short summary comparing creative agent tool use with a more structured approach. |
