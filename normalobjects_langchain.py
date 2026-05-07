@@ -3,7 +3,7 @@ from time import perf_counter
 from typing import Any, Dict, Iterable, List, Optional
 
 from dotenv import load_dotenv
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain_classic.agents import AgentExecutor, create_openai_tools_agent
 from langchain_community.chat_models import ChatOpenAI
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -12,6 +12,8 @@ from langchain.tools import tool
 
 
 MODEL_NAME = "gpt-4o-mini"
+AGENT_TEMPERATURE = 0.3
+TOOL_TEMPERATURE = 0.9
 MAX_RESPONSE_WORDS = 150
 DEFAULT_CREATIVITY_LEVEL = "medium"
 CREATIVITY_MULTIPLIERS = {"low": 1, "medium": 2, "high": 3}
@@ -19,23 +21,29 @@ DISPLAY_SEPARATOR_LENGTH = 60
 TOOL_SEQUENCE_PREVIEW_COUNT = 3
 TOOL_SEQUENCE_WINDOW_SIZE = 3
 SAMPLE_COMPLAINT_LIMIT = 2
+MAX_AGENT_ITERATIONS = 5
+MAX_AGENT_EXECUTION_SECONDS = 60
 
 SYSTEM_PROMPT = f"""You are the Creative Complaint Handler for NormalObjects — a company that sells
 absurdly ordinary items inspired by the Stranger Things universe.
 
-When a customer complaint comes in, creatively combine your available tools in any order:
-- consult_demogorgon: get a chaotic interdimensional perspective
-- check_hawkins_records: look up historical Hawkins data
-- cast_interdimensional_spell: suggest an imaginative fix
-- gather_party_wisdom: tap into the party's collective knowledge
-- consult_eleven: get Eleven's psychic reading from the Void
-- check_government_files: access classified Hawkins Lab documents
-- ask_murray_bauman: hear Murray's conspiracy-theory take on the situation
+When a customer complaint comes in, pick 2–4 tools that add the most unique value, then STOP
+calling tools and write your final answer. Do NOT call the same tool twice per complaint and do
+NOT keep calling tools once you have enough character perspectives to craft a response.
+
+Available tools (each adds a distinct voice — choose complementary ones):
+- consult_demogorgon: raw creature instinct / sensory chaos
+- check_hawkins_records: dry bureaucratic historical data
+- cast_interdimensional_spell: whimsical ritual fix
+- gather_party_wisdom: practical teen-squad dialogue
+- consult_eleven: fragmented psychic vision
+- check_government_files: classified lab documents
+- ask_murray_bauman: conspiracy-theory dot-connecting
 
 Use conversation history when it is relevant. If the customer references a previous complaint,
 connect the new answer to that earlier issue without repeating the whole conversation.
 
-Use the tools flexibly and combine their outputs into one witty, cohesive response under {MAX_RESPONSE_WORDS} words."""
+Combine the tool outputs into one witty, cohesive response under {MAX_RESPONSE_WORDS} words."""
 
 SAMPLE_COMPLAINTS = [
     "Why do demogorgons sometimes eat people and sometimes don't?",
@@ -89,22 +97,24 @@ def build_tools(llm: Any) -> List:
 
     @tool
     def consult_demogorgon(complaint: str) -> str:
-        """Get the Demogorgon's chaotic, instinct-driven perspective on a complaint."""
+        """Primal, sensory creature reaction — best for complaints involving smell, darkness, or instinct. Call at most once per complaint."""
         system = (
-            "You are the Demogorgon from Stranger Things — a creature from the Upside Down. "
-            "Respond to the complaint from your primal, hungry perspective. Be cryptic and fragmented, "
-            "darkly funny. Reference sensory experiences: smell, darkness, the pull of the gate. "
-            "Under 40 words."
+            "You are the Demogorgon from Stranger Things. React to the EXACT situation described — "
+            "name what you specifically smell or sense about it (e.g. the blood-iron tang of indecision, "
+            "the cold static of an unstable gate). Be cryptic, fragmented, darkly funny. "
+            "Do NOT give a generic monster growl — address the specific complaint detail. Under 40 words."
         )
         return _llm_call(llm, system, complaint)
 
     @tool
     def check_hawkins_records(query: str) -> str:
-        """Search Hawkins historical records for documented patterns and anomalies."""
+        """Dry bureaucratic historical data with dates and readings — best for pattern/frequency questions. Call at most once per complaint."""
         system = (
-            "You are an archivist presenting an entry from Hawkins, Indiana's official historical records. "
-            "Use a dry, bureaucratic tone. Reference dates, incident counts, and electromagnetic readings. "
-            "Include occasional [REDACTED] entries. Under 60 words."
+            "You are an archivist presenting a specific entry from Hawkins, Indiana's official records "
+            "that directly addresses the query. Invent concrete details tied to the query: 2–3 incident "
+            "dates (e.g., Nov 6 1983, Mar 22 1985), specific EM readings (e.g., 847 mT spike at grid F-7), "
+            "a unique incident ID (e.g., HKN-0042), and at least one [REDACTED] entry. "
+            "Dry, bureaucratic tone. Under 60 words."
         )
         return _llm_call(llm, system, query)
 
@@ -112,55 +122,64 @@ def build_tools(llm: Any) -> List:
     def cast_interdimensional_spell(
         problem: str, creativity_level: str = DEFAULT_CREATIVITY_LEVEL
     ) -> str:
-        """Suggest interdimensional rituals to fix a problem. creativity_level: low/medium/high."""
+        """Whimsical ritual fix using Stranger Things props — best when a concrete solution is needed. creativity_level: low/medium/high. Call at most once per complaint."""
         valid_level = validate_creativity_level(creativity_level)
         spell_count = CREATIVITY_MULTIPLIERS[valid_level]
         system = (
-            f"You are an interdimensional spell-caster. Generate exactly {spell_count} numbered ritual "
-            "suggestion(s) for the problem. Each spell must name specific physical objects and actions "
-            "with Stranger Things energy: Walkmans, compasses, salt circles, Kate Bush, Christmas lights, "
-            "or similar. Be inventive and whimsical. Under 80 words total."
+            f"You are an interdimensional spell-caster. Generate exactly {spell_count} numbered ritual(s) "
+            "tailored to the SPECIFIC problem described — do not write a generic ritual. "
+            "Each ritual names exact objects (Walkman playing a specific Kate Bush track, compass pointing "
+            "to a named location, Christmas lights arranged in a specific pattern, a salt circle radius) "
+            "and describes the precise action to perform WITH those objects FOR this problem. "
+            "Whimsical and inventive. Under 80 words total."
         )
         return _llm_call(llm, system, problem)
 
     @tool
     def gather_party_wisdom(question: str) -> str:
-        """Ask Mike, Dustin, Lucas, and Will for their collective wisdom on a problem."""
+        """Practical teen-squad dialogue — best for strategy or decision questions. Call at most once per complaint."""
         system = (
-            "You are narrating Mike, Dustin, Lucas, and Will from Stranger Things giving advice. "
-            "Write short character dialogue: Mike is analytical, Dustin is enthusiastic and science-focused, "
-            "Lucas is pragmatic, Will is quietly perceptive. Under 60 words."
+            "You are narrating Mike, Dustin, Lucas, and Will responding to the EXACT question asked — "
+            "no generic advice. Each character contributes one line directly addressing the specific issue: "
+            "Mike proposes a concrete strategy, Dustin cites a real science principle relevant to the issue, "
+            "Lucas raises a practical objection specific to the situation, Will senses something particular "
+            "about it. Under 60 words."
         )
         return _llm_call(llm, system, question)
 
     @tool
     def consult_eleven(query: str) -> str:
-        """Get Eleven's psychic reading from the Void."""
+        """Fragmented psychic vision from the Void — best for intuitive or emotional angles. Call at most once per complaint."""
         system = (
-            "You are Eleven from Stranger Things, speaking from the Void. Use short, fragmented speech "
-            "with powerful psychic imagery. Reference 'the gate', emotions as physical sensations, and "
-            "flashes of vision. Broken syntax. Under 35 words."
+            "You are Eleven speaking from the Void, giving a specific psychic reading about the exact "
+            "situation described. Name what you actually see: a specific object, a person's face, a color, "
+            "a physical sensation directly linked to the complaint. Do not be vague. "
+            "Short, fragmented, broken syntax. Reference 'the gate' or emotions as physical pressure. "
+            "Under 35 words."
         )
         return _llm_call(llm, system, query)
 
     @tool
     def check_government_files(query: str) -> str:
-        """Access classified Hawkins National Laboratory / Department of Energy documents."""
+        """Classified lab documents with incident numbers and redactions — best for scientific or institutional explanations. Call at most once per complaint."""
         system = (
-            "You are a declassified Hawkins National Laboratory document. Write in classified-file format: "
-            "include a classification level (DOE LEVEL 4/5 or MKUltra ANNEX), incident numbers, "
-            "bureaucratic understatement about horrifying events, and [REDACTED] entries. Under 70 words."
+            "You are a declassified Hawkins National Laboratory document addressing a specific query. "
+            "Include: a classification header (e.g., DOE LEVEL 4 / MKUltra ANNEX B), a unique incident "
+            "number (e.g., HNL-7734-C), a specific date, bureaucratic understatement that directly "
+            "addresses the exact situation described (not generic lab horror), and one targeted [REDACTED] "
+            "line. Do NOT write boilerplate — respond to the specific query. Under 70 words."
         )
         return _llm_call(llm, system, query)
 
     @tool
     def ask_murray_bauman(situation: str) -> str:
-        """Hear Murray Bauman's conspiracy-theory take on any situation."""
+        """Conspiracy-theory dot-connecting with unsolicited life advice — best for cover-up or mystery angles. Call at most once per complaint."""
         system = (
-            "You are Murray Bauman — former journalist, conspiracy theorist, vodka enthusiast with a "
-            "corkboard full of string and evidence. Respond with barely-contained excitement, connecting "
-            "dots others miss, using phrases like 'Follow the money!', 'Nothing is coincidence!', and "
-            "dropping unsolicited relationship advice. Under 60 words."
+            "You are Murray Bauman — former journalist, conspiracy theorist with a corkboard full of string. "
+            "Connect specific dots about the EXACT situation: name a suspect, a hidden organization, or a "
+            "concrete motive tied to the specific detail described. Use 'Follow the money!' or "
+            "'Nothing is coincidence!' Drop one unsolicited personal comment. Be specific, not vague. "
+            "Under 60 words."
         )
         return _llm_call(llm, system, situation)
 
@@ -259,7 +278,7 @@ def create_complaint_agent(
     """Create the LangChain complaint agent."""
     load_dotenv()
     if llm is None:
-        llm = ChatOpenAI(model_name=model)
+        llm = ChatOpenAI(model_name=model, temperature=AGENT_TEMPERATURE)
     selected_tools = tools_to_use or build_tools(llm)
 
     prompt = ChatPromptTemplate.from_messages(
@@ -272,7 +291,14 @@ def create_complaint_agent(
     )
 
     agent = create_openai_tools_agent(llm, selected_tools, prompt)
-    return AgentExecutor(agent=agent, tools=selected_tools)
+    return AgentExecutor(
+        agent=agent,
+        tools=selected_tools,
+        max_iterations=MAX_AGENT_ITERATIONS,
+        max_execution_time=MAX_AGENT_EXECUTION_SECONDS,
+        early_stopping_method="generate",
+        handle_parsing_errors=True,
+    )
 
 
 def extract_agent_response(result: Dict[str, Any]) -> str:
@@ -354,10 +380,11 @@ def measure_agent_performance(
     complaints: Iterable[str],
     llm: Any,
     use_memory: bool,
+    tool_llm: Optional[Any] = None,
 ) -> PerformanceSummary:
     """Measure response time and tool usage for a complaint run."""
     selected_complaints = list(complaints)[:SAMPLE_COMPLAINT_LIMIT]
-    base_tools = build_tools(llm)
+    base_tools = build_tools(tool_llm or llm)
     tracker = ToolUsageTracker(tool_instance.name for tool_instance in base_tools)
     tracked_tools = create_tracked_tools(base_tools, tracker)
     agent_executor = create_complaint_agent(llm=llm, tools_to_use=tracked_tools)
@@ -457,19 +484,22 @@ def run_performance_comparison(
 ) -> None:
     """Compare complaint handling with and without conversation memory."""
     load_dotenv()
-    llm = ChatOpenAI(model_name=MODEL_NAME)
+    agent_llm = ChatOpenAI(model_name=MODEL_NAME, temperature=AGENT_TEMPERATURE)
+    tool_llm = ChatOpenAI(model_name=MODEL_NAME, temperature=TOOL_TEMPERATURE)
 
     without_memory = measure_agent_performance(
         label="Without Memory",
         complaints=complaints,
-        llm=llm,
+        llm=agent_llm,
         use_memory=False,
+        tool_llm=tool_llm,
     )
     with_memory = measure_agent_performance(
         label="With Memory",
         complaints=complaints,
-        llm=llm,
+        llm=agent_llm,
         use_memory=True,
+        tool_llm=tool_llm,
     )
 
     print_performance_summary(without_memory)
@@ -480,11 +510,12 @@ def run_performance_comparison(
 def run_demo(complaints: Iterable[str] = SAMPLE_COMPLAINTS) -> None:
     """Run the sample complaint demo."""
     load_dotenv()
-    llm = ChatOpenAI(model_name=MODEL_NAME)
-    base_tools = build_tools(llm)
+    agent_llm = ChatOpenAI(model_name=MODEL_NAME, temperature=AGENT_TEMPERATURE)
+    tool_llm = ChatOpenAI(model_name=MODEL_NAME, temperature=TOOL_TEMPERATURE)
+    base_tools = build_tools(tool_llm)
     tracker = ToolUsageTracker(tool_instance.name for tool_instance in base_tools)
     tracked_tools = create_tracked_tools(base_tools, tracker)
-    agent_executor = create_complaint_agent(llm=llm, tools_to_use=tracked_tools)
+    agent_executor = create_complaint_agent(llm=agent_llm, tools_to_use=tracked_tools)
     memory = ConversationMemory()
 
     print_tool_summary(base_tools)
