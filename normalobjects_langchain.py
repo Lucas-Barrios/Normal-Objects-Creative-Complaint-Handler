@@ -3,7 +3,10 @@ from time import perf_counter
 from typing import Any, Dict, Iterable, List, Optional
 
 from dotenv import load_dotenv
-from langchain_classic.agents import AgentExecutor, create_openai_tools_agent
+try:
+    from langchain_classic.agents import AgentExecutor, create_openai_tools_agent
+except ModuleNotFoundError:
+    from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_community.chat_models import ChatOpenAI
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
